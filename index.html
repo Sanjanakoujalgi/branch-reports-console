@@ -6577,8 +6577,37 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   window.__dashLoad = handleFiles;\r
   window.__dashFiles = fileStore;\r
 \r
-  // open the files saved in this browser (a refresh keeps everything)\r
-  restoreFiles();\r
+  // the month's Excel files in the "Data" folder next to the dashboard: with Start Dashboard (the local server lists them\r
+  // at /__datafiles), the ones not in the dashboard yet (same name and size) are opened as if uploaded, and the newest\r
+  // month they add is shown. Only from Start Dashboard's server (localhost, ports 8765 to 8775): not on the online copies\r
+  // (GitHub, claude.ai), another local server or a dashboard opened as a file.\r
+  async function loadDataFolder() {\r
+    if (!/^(localhost|127\\.0\\.0\\.1)$/.test(location.hostname) || !(+location.port >= 8765 && +location.port <= 8775)) return;\r
+    let list = null;\r
+    try { const r = await fetch('/__datafiles', { cache: 'no-store' }); if (!r.ok) return; list = await r.json(); } catch (e) { return; }\r
+    if (!Array.isArray(list) || !list.length) return;\r
+    const have = new Set(FILE_TYPES.flatMap(t => (S.workbooks[t] || []).map(w => w.name + '|' + w.size)));\r
+    const todo = list.filter(f => f && f.name && f.path && /\\.(xlsx|xlsm|xls)$/i.test(f.name) && !/^~\\$/.test(f.name) && !have.has(f.name + '|' + f.size));\r
+    if (!todo.length) return;\r
+    loading(true, \`Opening \${todo.length} file\${todo.length === 1 ? '' : 's'} from the Data folder…\`);\r
+    const files = [];\r
+    for (const f of todo) {\r
+      try {\r
+        const r = await fetch('/' + String(f.path).split('/').map(encodeURIComponent).join('/'), { cache: 'no-store' });\r
+        if (r.ok) files.push(new File([await r.arrayBuffer()], f.name, { lastModified: +f.modified || Date.now() }));\r
+      } catch (e) { /* left out; it can still be uploaded */ }\r
+    }\r
+    loading(false);\r
+    if (!files.length) return;\r
+    const before = new Set(S.months.map(mo => mo.key));\r
+    await handleFiles(files);\r
+    const added = S.months.map(mo => mo.key).filter(k => k && !before.has(k)).sort();\r
+    if (added.length && S.model) selectMonth(added[added.length - 1]);\r
+    toast(\`Opened \${files.length} new file\${files.length === 1 ? '' : 's'} from the Data folder: \${files.map(f => f.name).join(', ')}.\`, 10000);\r
+  }\r
+\r
+  // open the files saved in this browser (a refresh keeps everything), then the new files in the Data folder\r
+  restoreFiles().then(loadDataFolder, loadDataFolder);\r
 })();\r
 `;function la(_){const pe=document.createElement("script");pe.textContent=_,document.body.appendChild(pe),pe.remove()}function m1(){return tp.useLayoutEffect(()=>{la(c1),la(u1),la(h1),la(f1),la(d1),la(p1)},[]),np.createElement("div",{dangerouslySetInnerHTML:{__html:l1}})}o1.createRoot(document.getElementById("root")).render(np.createElement(m1,null));
 </script>
