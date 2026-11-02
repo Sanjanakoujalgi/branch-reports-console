@@ -2125,7 +2125,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }\r
   function titleCase(s) { return norm(s).toLowerCase().replace(/\\b\\w/g, c => c.toUpperCase()); }\r
   // branch from a sheet or file name such as "AFH DUBAI", "ARCHEO", "Si Italiano stock June"\r
-  const NAME_BRANCH_RULES = [['^beach\\\\b|\\\\bbeach\\\\b', 'ATH Beach'], ['\\\\bCK\\\\b', 'Central Kitchen'], ['\\\\bCW\\\\b|warehouse', 'Central Warehouse'], ['\\\\bHO\\\\b', 'Head Office'], ['AFH ?D(ubai|XB)\\\\b', 'AFH Dubai'], ['AFH ?(SH|SHJ|Sharjah)\\\\b', 'AFH Sharjah'], ['ATH ?(SH|SHJ|Sharjah)\\\\b', 'ATH Sharjah']];\r
+  // short sheet names too: "ARCHAE" / "ARCHEO" (ATH Archaeological), "Merc" (ATH Mercato), as in the Product Variant stock export of October 2026\r
+  const NAME_BRANCH_RULES = [['^beach\\\\b|\\\\bbeach\\\\b', 'ATH Beach'], ['\\\\bCK\\\\b', 'Central Kitchen'], ['\\\\bCW\\\\b|warehouse', 'Central Warehouse'], ['\\\\bHO\\\\b', 'Head Office'], ['AFH ?D(ubai|XB)\\\\b', 'AFH Dubai'], ['AFH ?(SH|SHJ|Sharjah)\\\\b', 'AFH Sharjah'], ['ATH ?(SH|SHJ|Sharjah)\\\\b', 'ATH Sharjah'], ['\\\\bArcha?eo?\\\\b', 'ATH Archaeological'], ['\\\\bMerc\\\\b', 'ATH Mercato']];\r
   function branchFromName(name, config) {\r
     const t = norm(name).replace(/[_]+/g, ' ');\r
     if (!t) return null;\r
