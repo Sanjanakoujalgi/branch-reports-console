@@ -1891,7 +1891,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (year) period.kind = 'year';\r
     if (period.first) period.text = \`\${fmtDate(period.first)} – \${fmtDate(period.last)}\`;\r
     const many = parts.length > 1;\r
-    const fileIss = [].concat(...parts.map(({ f, refs }) => purchaseFileIssues(f.info, f.lines.filter(l => refs.has(l.ref)), false).map(i => (many ? Object.assign({}, i, { title: \`\${i.title} ("\${f.fileName}")\` }) : i))));\r
+    // per file: its own issues, and (a month) the orders a month's own file brought in that were created in another month,\r
+    // as when the file is used on its own (the "Purchases by day" note points to it); the file name once in the title\r
+    const tagFile = (i, f) => (many && !i.title.includes(\`"\${f.fileName}"\`) ? Object.assign({}, i, { title: \`\${i.title} ("\${f.fileName}")\` }) : i);\r
+    const fileIss = [].concat(...parts.map(({ f, refs }) => purchaseFileIssues(f.info, f.lines.filter(l => refs.has(l.ref)), false).concat(year ? [] : outsideIssues(f.orders.filter(o => refs.has(o.ref)), period)).map(i => tagFile(i, f))));\r
     const endIss = [].concat(...parts.map(({ f }) => purchaseFileIssuesEnd(f.info))).filter((i, j, a) => a.findIndex(x => x.title === i.title) === j);\r
     const issues = fileIss.concat(purchaseLineIssues(lines, vtLabels), endIss);\r
     const flags = {}; for (const k of ['vendor', 'billing', 'uom', 'deliver', 'category', 'created']) flags[k] = parts.every(p => p.f.flags[k]) ? true : parts.some(p => p.f.flags[k]) ? 'some' : false;\r
@@ -2059,7 +2062,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (shared.length) issues.push({ file: 'Stock', severity: 'info', title: 'Product codes used by more than one product', detail: \`\${shared.length} \${shared.length === 1 ? 'code belongs' : 'codes belong'} to two or more products (often an archived copy plus the active one), e.g. [\${shared[0][0]}] \${shared[0][1].map(p => p.name).join(' / ')}.\`, action: 'Each product is kept separate.', fix: 'Merge or clean up duplicate products in Odoo.', sample: { columns: ['Code', 'Products'], rows: shared.map(([c, ps]) => [c, ps.map(p => p.name).join(' | ')]) } });\r
     if (multiline) issues.push({ file: 'Stock', severity: 'info', title: 'Line breaks inside product names', detail: \`\${pl(multiline, 'product name')} contained a line break.\`, action: 'Cleaned to a single line.' });\r
     if (extraCols.size) issues.push({ file: 'Stock', severity: 'info', title: 'Extra columns ignored', detail: \`Not used by the dashboard: \${[...extraCols].join(', ')}.\`, action: 'Ignored (kept in the cleaned download).' });\r
-    if (noLocation.length) issues.push({ file: 'Stock', severity: 'info', code: 'stockNoLocation', title: \`No Location column in "\${fileName}"\`, detail: \`Each sheet is taken as one location: \${noLocation.map(x => { const br = (lines.find(l => l.sheet === x.sheet) || {}).branch || '–'; return \`"\${x.sheet}" = \${x.location}\${br === x.location ? '' : \` (\${br})\`}\`; }).join('; ')}.\`, action: noLocation.every(x => x.monthSheet) ? 'The month and the branch are both taken from the sheet name.' : 'Location taken from the sheet name (or the file name when the sheet has a default name).', fix: noLocation.every(x => x.monthSheet) ? 'Nothing to do. Adding the Location column to the Odoo export would make the location certain.' : 'Name each sheet after its location (e.g. "Si Italiano"), or add the Location column to the Odoo export.' });\r
+    // (merged stock files already carry one such note per file: not repeated under the joined name)\r
+    if (noLocation.length && !issues.some(i => i.code === 'stockNoLocation')) issues.push({ file: 'Stock', severity: 'info', code: 'stockNoLocation', title: \`No Location column in "\${fileName}"\`, detail: \`Each sheet is taken as one location: \${noLocation.map(x => { const br = (lines.find(l => l.sheet === x.sheet) || {}).branch || '–'; return \`"\${x.sheet}" = \${x.location}\${br === x.location ? '' : \` (\${br})\`}\`; }).join('; ')}.\`, action: noLocation.every(x => x.monthSheet) ? 'The month and the branch are both taken from the sheet name.' : 'Location taken from the sheet name (or the file name when the sheet has a default name).', fix: noLocation.every(x => x.monthSheet) ? 'Nothing to do. Adding the Location column to the Odoo export would make the location certain.' : 'Name each sheet after its location (e.g. "Si Italiano"), or add the Location column to the Odoo export.' });\r
 \r
     return { kind: 'stock', fileName, sheets, lines, products, byLoc, mode, perProduct, evidence: { multi, identical, identicalNZ, share, qtyHeader, headerHint, example }, hasValue, hasUom, headerUnion, issues, exported, noLocation };\r
   }\r
@@ -2482,7 +2486,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         const nb = agg3(st.negLines, x => x.branch);\r
         I.stock.push({ tone: st.negLines.length ? 'warn' : 'good', text: \`**\${pl(st.negLines.length, 'stock line')}** (product × location) \${st.negLines.length === 1 ? 'is' : 'are'} negative\${nb[0] ? \`, most at \${nb[0].key} (\${nb[0].count})\` : ''}.\` });\r
       } else I.stock.push({ tone: st.neg ? 'warn' : 'good', text: \`**\${st.neg} of \${fmtN(st.nProducts, 0)} products**\${who ? \` held at \${who}\` : ''} have negative stock\${who && ST.mode === 'product-total' ? ' (the quantities in this file are group totals)' : ''}\${st.negByCat[0] ? \`. The largest group is "\${st.negByCat[0].key}" (\${st.negByCat[0].count})\` : ''}.\` });\r
-      const negMenu = (st.negLinesByCat || st.negByCat).find(x => x.key === MAIN.menu);\r
+      // menu items below zero: products (a product negative at several locations counts once), as the sentence says\r
+      const negMenuN = st.negLines ? new Set(st.negLines.filter(x => x.cat === MAIN.menu).map(x => x.product)).size : ((st.negByCat.find(x => x.key === MAIN.menu) || {}).count || 0);\r
+      const negMenu = negMenuN ? { count: negMenuN } : null;\r
       if (negMenu) I.stock.push({ tone: 'warn', text: \`\${pl(negMenu.count, 'negative product')} \${negMenu.count === 1 ? 'is a' : 'are'} **finished menu item\${negMenu.count === 1 ? '' : 's'}** (e.g. dishes sold through the POS). This usually means \${negMenu.count === 1 ? 'it is set up in Odoo as a stocked product' : 'they are set up in Odoo as stocked products'} without a recipe (BOM), so each sale takes \${negMenu.count === 1 ? 'it' : 'them'} below zero.\` });\r
       if (st.archived.length) I.stock.push({ tone: 'warn', text: \`\${pl(st.archived.length, 'archived product')} still \${st.archived.length === 1 ? 'shows' : 'show'} a quantity (\${st.archived.filter(x => x.qty > 0).length} above zero, \${st.archived.filter(x => x.qty < 0).length} below zero) and should be cleared in Odoo.\` });\r
       if (st.coverHigh.length) I.stock.push({ tone: 'warn', text: \`\${pl(st.coverHigh.length, 'product')} \${st.coverHigh.length === 1 ? 'holds' : 'hold'} 3 or more months of stock compared with this month's buying, e.g. \${st.coverHigh.slice(0, 2).map(c => \`\${c.name} (\${monthsText(c.months)} months)\`).join(', ')}. Check for overstock or stock not consumed in Odoo.\` });\r
@@ -3343,6 +3349,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     const names = placesIn(text);\r
     return !names.length || names.some(inView);\r
   }\r
+  // a purchase file is about the brand / branch picked when it has order lines of a branch in view (in a month loaded)\r
+  const purchFileInView = name => !filtered() || S.months.some(x => x.purchases && x.purchases.lines.some(l => l.file === name && inView(l.branch)));\r
+  // the purchase file a check names in its title (the first one named), if any\r
+  const purchFileNamed = t => { let best = null, at = Infinity; for (const w of S.workbooks.purchases || []) { const k = t.indexOf(\`"\${w.name}"\`); if (k >= 0 && k < at) { best = w.name; at = k; } } return best; };\r
   // a check: the branches in its title decide; a title without a branch, then its whole text. A month with several stock\r
   // files names each stock check with its file: the checks of a stock file the branch does not use are left out, and\r
   // the file name (e.g. "AFH Dubai stock … + AFH Sharjah stock …") does not decide which branch a check is about\r
@@ -3351,6 +3361,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     let t = String(i.title || '');\r
     const sf = i.file === 'Stock' ? stocksOf(S.month).find(f => t.startsWith(f.fileName + ': ')) : null;\r
     if (sf) { if (S.data.stock && sf !== S.data.stock) return false; t = t.slice(sf.fileName.length + 2); }\r
+    // a purchase check about one file (e.g. 'No Billing Status column in "…"', 'Order details filled down ("…")'): kept when\r
+    // that file has orders of the brand / branch picked (a file's name does not say whose orders it holds)\r
+    const pf = i.file === 'Purchases' ? purchFileNamed(t) : null;\r
+    if (pf) return purchFileInView(pf);\r
     const names = placesIn(t);\r
     return names.length ? names.some(inView) : aboutView([t, i.detail, i.action, i.fix].join(' '));\r
   }\r
@@ -3621,20 +3635,23 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }\r
   const stockDateOne = f => (f.when && f.when.date ? \`stock on \${fmtDate(f.when.date)}\` : f.when && (f.when.source === 'name' || f.when.source === 'sheet') ? \`stock for \${U.monthLabel(f.when.key)} (from the \${f.when.source === 'sheet' ? 'sheet' : 'file'} name)\` : 'stock date not in the file');\r
   // a stock made of several branch files of one month keeps each file's own date (the files of the branches in view)\r
-  const stockDateParts = f => (f && f.parts ? (filtered() && stockPartsInView(f).length ? stockPartsInView(f) : f.parts) : null);\r
+  // all = every file of a merged stock (the files bar lists them all), else the files of the branches in view\r
+  const stockDateParts = (f, all) => (f && f.parts ? (!all && filtered() && stockPartsInView(f).length ? stockPartsInView(f) : f.parts) : null);\r
   // whose stock a branch file is: its brand when it holds only that brand's branches, else its branches\r
   const stockPartWho = p => { const bs = [...new Set(p.byLoc.map(l => l.branch))], br = [...new Set(bs.map(b => U.brandOf(b)))]; return br.length === 1 && bs.length > 1 ? BRAND_SHORT[br[0]] || br[0] : bs.join(', '); };\r
   const andList = a => (a.length <= 1 ? a.join('') : \`\${a.slice(0, -1).join(', ')} and \${a[a.length - 1]}\`);\r
   // several dates: "stock on 02/11/2026 (ATH), 03/11/2026 (AFH) and October 2026 from the file name (Si Italiano)"\r
-  const stockDateText = f => {\r
-    const ps = stockDateParts(f);\r
+  const stockDateText = (f, all) => {\r
+    const ps = stockDateParts(f, all);\r
     if (!ps) return stockDateOne(f);\r
     if (new Set(ps.map(stockDateOne)).size === 1) return stockDateOne(ps[0]);\r
     return \`stock on \${andList(ps.map(p => \`\${p.when && p.when.date ? fmtDate(p.when.date) : p.when && p.when.key ? \`\${U.monthLabel(p.when.key)} from the \${p.when.source === 'sheet' ? 'sheet' : 'file'} name\` : 'no date'} (\${stockPartWho(p)})\`))}\`;\r
   };\r
   // why a stock file is used for its month\r
   // where a stock file's own month comes from: the sheet name, the file name or the day it was exported\r
-  const stockFrom = f => (f.when && f.when.source === 'sheet' ? 'the sheet name' : f.when && f.when.source === 'name' ? 'the file name' : 'its date');\r
+  const stockFromOne = f => (f.when && f.when.source === 'sheet' ? 'the sheet name' : f.when && f.when.source === 'name' ? 'the file name' : 'its date');\r
+  // a stock made of several branch files: where the month of the files in view comes from (e.g. the Si Italiano file: its name)\r
+  const stockFrom = f => { const ps = stockDateParts(f); if (!ps) return stockFromOne(f); const ss = [...new Set(ps.map(stockFromOne))]; return ss.length === 1 ? ss[0] : "the files' dates and names"; };\r
   const stockWhyOne = f => (f.monthPicked ? \`you picked \${U.monthLabel(f.monthKey)}\${f.when && f.when.key && f.when.key !== f.monthKey ? \` (from \${stockFrom(f)} it would be \${U.monthLabel(f.when.key)})\` : ''}\` : f.when && f.when.key ? f.when.why : \`\${f.when ? f.when.why : 'no date found'}, so it is used for the latest month\`);\r
   // several branch files: the same reason with each file's day ("exported on 02/11/2026 and 03/11/2026, in the first 7 days …")\r
   const stockWhy = f => {\r
@@ -4014,7 +4031,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         let detail = '';\r
         if (type === 'sales') detail = (d.period ? d.period.text : '') + (d.perBranch ? (d.parts.length === 1 && !d.parts[0].single ? ' · 1 POS file' : \` · \${d.parts.length} branch file\${d.parts.length === 1 ? '' : 's'}\`) : '');\r
         if (type === 'purchases') detail = \`\${fN(d.orders.length)} orders · \${fN(d.lines.length)} lines\`;\r
-        if (type === 'stock') detail = \`\${stockDateText(d)} · \${d.byLoc.length} location\${d.byLoc.length === 1 ? '' : 's'} · \${fN(d.products.length)} products\${stocksOf(S.month).length > 1 ? \` · 1 of \${stocksOf(S.month).length} stock files for this month\` : ''}\`;\r
+        if (type === 'stock') detail = \`\${stockDateText(d, true)} · \${d.byLoc.length} location\${d.byLoc.length === 1 ? '' : 's'} · \${fN(d.products.length)} products\${stocksOf(S.month).length > 1 ? \` · 1 of \${stocksOf(S.month).length} stock files for this month\` : ''}\`;\r
         if (months.length > 1) detail += \` · \${months.length} months loaded\`;\r
         const shown = type === 'sales' && d.perBranch ? \`\${d.parts.map(p => p.label).join(', ')}\` : d.fileName;\r
         fi.append(el('div', { class: 'file-chip', title: allNames(type).join('\\n') }, icon('check', 'tone-good'), el('strong', { text: TYPE_LABEL[type] }), el('span', { class: 'fname', text: shown }), el('span', { text: '· ' + detail })));\r
@@ -5154,7 +5171,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     const st = active ? E.stockView(ST, Pf || groupBuy, { cover: !part && !groupBuy }) : m.st;\r
     const mo = curMonth();\r
     const locIn = byPlace ? ST0.byLoc.filter(l => inView(l.branch)) : ST0.byLoc, rowsIn = byPlace ? ST0.lines.filter(l => inView(l.branch)).length : ST0.lines.length;\r
-    const locText = byPlace && locIn.length < ST0.byLoc.length ? \`\${locIn.length} of the file's \${ST0.byLoc.length} locations\` : \`\${ST0.byLoc.length} location\${ST0.byLoc.length === 1 ? '' : 's'}\`;\r
+    // the locations of the file(s) named in the heading: with a brand or branch picked, a merged stock names only the files of the branches in view\r
+    const psIn = byPlace && ST0.parts ? stockPartsInView(ST0) : null, locAll = psIn && psIn.length ? psIn.reduce((n, p) => n + p.byLoc.length, 0) : ST0.byLoc.length;\r
+    const locText = byPlace && locIn.length < locAll ? \`\${locIn.length} of the \${psIn && psIn.length > 1 ? \`\${psIn.length} files'\` : \`file's\`} \${locAll} locations\` : \`\${locIn.length} location\${locIn.length === 1 ? '' : 's'}\`;\r
     panel.append(tabHead('Stock', \`\${mo && mo.key ? \`\${mo.label} · \` : ''}\${byPlace ? \`\${filterWho()} · \` : ''}Odoo stock on hand · \${byPlace ? stockNameInView(ST0) : ST0.fileName} · \${stockDateText(ST0)} · \${locText} · \${fN(rowsIn)} rows read\`));\r
     append(panel, insightsBox(insightsFor({ cat: F.cat }).stock, insightsTitle(F.cat)));\r
     const mkSel = (label, key, vals, allText) => {\r
@@ -5218,7 +5237,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     }));\r
     const NC = st.negLinesByCat || st.negByCat;\r
     if (NC.length) grid.append(card(ctx, {\r
-      title: 'Negative stock by category', note: \`**\${NC[0].key}**: \${NC[0].count} of the \${st.negCount} negative \${st.negLines ? 'stock lines' : 'products'}. **%** = share of all negative \${st.negLines ? 'stock lines' : 'products'}.\`,\r
+      title: 'Negative stock by category', note: \`**\${NC[0].key}**: \${fN(NC[0].count)} of the \${fN(st.negCount)} negative \${st.negLines ? 'stock lines' : 'products'}. **%** = share of all negative \${st.negLines ? 'stock lines' : 'products'}.\`,\r
       chart: hbar({ labels: NC.map(x => x.key), datasets: [{ label: st.negLines ? 'Stock lines' : 'Products', data: NC.map(x => x.count) }], labelPad: 96, fmt: v => \`\${fN(v)} \${st.negLines ? 'stock lines' : 'products'} · \${pctOf(v, st.negCount)}\`, labelFmt: v => \`\${fN(v)} · \${pctOf(v, st.negCount)}\`, axisFmt: v => fN(v), labelLen: 34 }),\r
       table: { columns: [col('Category', 'key'), col(st.negLines ? 'Negative stock lines' : 'Negative products', 'count', x => fN(x), true), col('Share', r => (st.negCount ? r.count / st.negCount : null), x => fPct(x), true)], rows: NC },\r
     }));\r
@@ -5845,7 +5864,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     for (const R of S.ranges || []) rows.push({ keep: R.sales && posBranchList(R.sales).length ? posBranchList(R.sales).some(posInView) : undefined, file: 'Sales · check', name: R.files.join(', '), what: \`\${R.period.text}: more than one month, so it is not a month on its own. Only used to check the monthly files (see below).\` });\r
     const pmonths = new Map();\r
     for (const x of S.months) if (x.purchases) for (const src of x.purchases.sources || [{ fileName: x.purchases.fileName, orders: x.purchases.orders.length, lines: x.purchases.lines.length }]) { const a = pmonths.get(src.fileName) || []; a.push(\`\${x.label} \${fN(src.orders)} orders\`); pmonths.set(src.fileName, a); }\r
-    for (const w of S.workbooks.purchases || []) rows.push({ file: 'Purchases', name: w.name, what: pmonths.has(w.name) ? \`Used for: \${pmonths.get(w.name).join('; ')}\` : 'Not used (see the notes below)' });\r
+    for (const w of S.workbooks.purchases || []) rows.push({ keep: pmonths.has(w.name) ? purchFileInView(w.name) : undefined, file: 'Purchases', name: w.name, what: pmonths.has(w.name) ? \`Used for: \${pmonths.get(w.name).join('; ')}\` : 'Not used (see the notes below)' });\r
     for (const f of S.stockFiles) {\r
       const ps = f.parts && filtered() ? stockPartsInView(f) : [f], sh = [].concat(...ps.map(p => p.sheets)), nl = sum(ps, p => p.lines.length), nb = new Set([].concat(...ps.map(p => p.byLoc.map(l => l.branch)))).size;\r
       rows.push({ keep: f.byLoc.some(l => inView(l.branch)), file: \`Stock · \${f.monthKey ? U.monthLabel(f.monthKey) : 'month not known'}\${f === S.data.stock ? ' (this month)' : ''}\`, name: ps.map(p => p.fileName).join(' + '), what: \`\${stockDateText(f)}, used for \${f.monthKey ? U.monthLabel(f.monthKey) : '–'} (\${stockWhy(f)}); \${fN(nl)} rows from \${sh.length} sheet\${sh.length === 1 ? '' : 's'} (\${sh.map(x => x.name).join(', ')}); \${nb} location\${nb === 1 ? '' : 's'}\` });\r
