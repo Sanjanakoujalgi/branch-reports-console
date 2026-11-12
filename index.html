@@ -7363,10 +7363,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
 \r
   // the month's Excel files in the "Data" folder next to the dashboard: with Start Dashboard (the local server lists them\r
   // at /__datafiles), the ones not in the dashboard yet (same name and size) are opened as if uploaded, and the newest\r
-  // month they add is shown. Only from Start Dashboard's server (localhost, ports 8765 to 8775): not on the online copies\r
-  // (GitHub), another local server or a dashboard opened as a file.\r
+  // month they add is shown. Only from the dashboard's own server: Start Dashboard / run_dashboard.py on this computer\r
+  // (localhost, ports 8765 to 8775) or the company server (it lists the files at /__datafiles behind its password);\r
+  // not on the GitHub copy, another local server or a dashboard opened as a file.\r
   async function loadDataFolder() {\r
-    if (!/^(localhost|127\\.0\\.0\\.1)$/.test(location.hostname) || !(+location.port >= 8765 && +location.port <= 8775)) return;\r
+    const local = /^(localhost|127\\.0\\.0\\.1)$/.test(location.hostname);\r
+    if (!/^https?:$/.test(location.protocol) || /\\.github\\.io$/i.test(location.hostname) || (local && !(+location.port >= 8765 && +location.port <= 8775))) return;\r
     let list = null;\r
     try { const r = await fetch('/__datafiles', { cache: 'no-store' }); if (!r.ok) return; list = await r.json(); } catch (e) { return; }\r
     if (!Array.isArray(list) || !list.length) return;\r
